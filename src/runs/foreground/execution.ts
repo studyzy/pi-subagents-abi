@@ -1489,18 +1489,26 @@ async function runSingleAttempt(
 			reason: "completion_guard",
 		}));
 	}
-		if (options.outputPath && result.exitCode === 0) {
-			const resolvedOutput = resolveSingleOutput(options.outputPath, fullOutput, shared.outputSnapshot);
-			fullOutput = stripAcceptanceReport(resolvedOutput.fullOutput);
-			result.savedOutputPath = resolvedOutput.savedPath;
-			result.outputSaveError = resolvedOutput.saveError;
-			if (resolvedOutput.savedPath) {
-				result.outputReference = formatSavedOutputReference(resolvedOutput.savedPath, fullOutput);
-				if (result.outputState === "absent") result.outputState = "unknown";
-			}
+	if (options.outputPath && result.exitCode === 0) {
+		const structuredOutputFileContent = result.structuredOutput !== undefined
+			? JSON.stringify(result.structuredOutput, null, 2)
+			: undefined;
+		const resolvedOutput = resolveSingleOutput(
+			options.outputPath,
+			structuredOutputFileContent ?? fullOutput,
+			shared.outputSnapshot,
+			structuredOutputFileContent !== undefined,
+		);
+		fullOutput = stripAcceptanceReport(resolvedOutput.fullOutput);
+		result.savedOutputPath = resolvedOutput.savedPath;
+		result.outputSaveError = resolvedOutput.saveError;
+		if (resolvedOutput.savedPath) {
+			result.outputReference = formatSavedOutputReference(resolvedOutput.savedPath, fullOutput);
+			if (result.outputState === "absent") result.outputState = "unknown";
+		}
 	}
-		artifactOutputByResult.set(result, fullOutput);
-		acceptanceOutputByResult.set(result, acceptanceOutput);
+	artifactOutputByResult.set(result, fullOutput);
+	acceptanceOutputByResult.set(result, acceptanceOutput);
 	result.outputMode = options.outputMode ?? "inline";
 	result.finalOutput = options.outputMode === "file-only" && result.savedOutputPath && result.outputReference
 		? result.outputReference.message

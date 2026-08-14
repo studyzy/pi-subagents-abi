@@ -173,33 +173,37 @@ export function resolveSingleOutput(
 	outputPath: string | undefined,
 	fallbackOutput: string,
 	beforeRun: SingleOutputSnapshot | undefined,
+	/** Force-persist the fallback even if the child wrote the path itself (e.g. authoritative structured output). */
+	overwrite = false,
 ): { fullOutput: string; savedPath?: string; saveError?: string } {
 	if (!outputPath) return { fullOutput: fallbackOutput };
 
-	let changedSinceStart = false;
-	try {
-		const stat = fs.statSync(outputPath);
-		changedSinceStart = !beforeRun?.exists
-			|| stat.mtimeMs !== beforeRun.mtimeMs
-			|| stat.size !== beforeRun.size;
-	} catch (error) {
-		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
-		if (code !== "ENOENT" && code !== "ENOTDIR") {
-			return {
-				fullOutput: fallbackOutput,
-				saveError: `Failed to inspect output file: ${error instanceof Error ? error.message : String(error)}`,
-			};
-		}
-	}
-
-	if (changedSinceStart) {
+	if (!overwrite) {
+		let changedSinceStart = false;
 		try {
-			return { fullOutput: fs.readFileSync(outputPath, "utf-8"), savedPath: outputPath };
+			const stat = fs.statSync(outputPath);
+			changedSinceStart = !beforeRun?.exists
+				|| stat.mtimeMs !== beforeRun.mtimeMs
+				|| stat.size !== beforeRun.size;
 		} catch (error) {
-			return {
-				fullOutput: fallbackOutput,
-				saveError: `Failed to read changed output file: ${error instanceof Error ? error.message : String(error)}`,
-			};
+			const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+			if (code !== "ENOENT" && code !== "ENOTDIR") {
+				return {
+					fullOutput: fallbackOutput,
+					saveError: `Failed to inspect output file: ${error instanceof Error ? error.message : String(error)}`,
+				};
+			}
+		}
+
+		if (changedSinceStart) {
+			try {
+				return { fullOutput: fs.readFileSync(outputPath, "utf-8"), savedPath: outputPath };
+			} catch (error) {
+				return {
+					fullOutput: fallbackOutput,
+					saveError: `Failed to read changed output file: ${error instanceof Error ? error.message : String(error)}`,
+				};
+			}
 		}
 	}
 

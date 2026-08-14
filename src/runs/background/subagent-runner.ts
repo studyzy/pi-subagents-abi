@@ -1691,9 +1691,15 @@ async function runSingleStep(
 
 	const rawOutput = finalResult?.finalOutput ?? "";
 	const outputForPersistence = stripAcceptanceReport(rawOutput);
+	// The validated structured output is the authoritative artifact: when it exists,
+	// prefer it for the output file over any prose the child also wrote.
+	const structuredOutputForPersistence = (finalResult as (RunPiStreamingResult & { structuredOutput?: unknown }) | undefined)?.structuredOutput;
+	const outputFileContent = structuredOutputForPersistence !== undefined
+		? JSON.stringify(structuredOutputForPersistence, null, 2)
+		: outputForPersistence;
 	const resolvedOutput = step.outputPath && finalResult?.exitCode === 0
-		? resolveSingleOutput(step.outputPath, outputForPersistence, finalOutputSnapshot)
-		: { fullOutput: outputForPersistence };
+		? resolveSingleOutput(step.outputPath, outputFileContent, finalOutputSnapshot, structuredOutputForPersistence !== undefined)
+		: { fullOutput: outputFileContent };
 	const output = stripAcceptanceReport(resolvedOutput.fullOutput);
 	const outputReference = resolvedOutput.savedPath ? formatSavedOutputReference(resolvedOutput.savedPath, output) : undefined;
 	let outputForSummary = output;
