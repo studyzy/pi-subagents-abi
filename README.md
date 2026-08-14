@@ -68,7 +68,9 @@ Rule of thumb: `scout` before you understand the code, `researcher` before you t
 
 ## Typed agents (ABI)
 
-Agents can declare a typed contract in frontmatter with an `abi:` block: an input schema, an output schema, and an optional `maxRetries` repair budget. The shipped `architecture-reviewer` agent is a working example:
+Agents can optionally declare a typed contract in frontmatter with an `abi:` block: an input schema (`abi.input`), an output schema (`abi.output`), and an optional `maxRetries` repair budget. Both schemas are standard JSON Schema and can be declared independently — `abi.output` alone turns the agent's output into structured JSON, `abi.input` alone validates its input, and an agent with no `abi:` block behaves exactly as before.
+
+The shipped `architecture-reviewer` agent is a working example (`agents/architecture-reviewer.md`):
 
 ```yaml
 abi:
@@ -76,16 +78,31 @@ abi:
   input:
     title: ArchitectureReviewRequest
     type: object
+    additionalProperties: false
     required: [target]
     properties:
       target: { type: string }
+      focusAreas:
+        type: array
+        items: { type: string, enum: [architecture, dependencies, testability] }
   output:
     title: ArchitectureReviewResult
     type: object
+    additionalProperties: false
     required: [summary, strengths, risks, recommendedActions]
+    properties:
+      summary: { type: string }
+      strengths: { type: array, items: { type: string } }
+      risks: { type: array, items: { type: string } }
+      recommendedActions: { type: array, items: { type: string } }
 ```
 
-When you call a typed agent, Pi validates your task input against the input schema, injects it into the child session, requires the child to answer through `structured_output`, and (on failure) repairs the output with up to `maxRetries` parent-level retries before returning a typed failure:
+When you call a typed agent:
+
+- Pi validates your `input` object against `abi.input` before spawning the child. Invalid input fails fast with a `path: message` error and the child is never started. If the agent declares `abi.input` but the call only passes a `task`, the call degrades to the legacy free-text path instead of erroring.
+- Typed input reaches the child via a temp file + env var, never embedded in the `task` text; `task` remains a free-text supplementary instruction.
+- The child must answer through `structured_output`, validated against `abi.output`. A per-call `outputSchema` still overrides the agent declaration.
+- On validation failure, the output is repaired with up to `maxRetries` parent-level retries (default 2) before a typed failure is returned.
 
 ```text
 Use architecture-reviewer to analyze the auth module with focus on dependencies.
