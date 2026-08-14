@@ -180,3 +180,81 @@ export function cleanupStructuredOutputRuntime(runtime: StructuredOutputRuntime 
 		// Best-effort temp cleanup.
 	}
 }
+
+/**
+ * Compact, token-friendly summary of a JSON Schema's shape. Includes the top
+ * levels of structure (title/type/required/properties) instead of the full
+ * schema, since the child already receives the full schema via the
+ * `structured_output` tool definition.
+ */
+export function summarizeOutputSchema(schema: JsonSchemaObject): string {
+	const title = typeof schema.title === "string" ? schema.title : undefined;
+	const type = Array.isArray(schema.type) ? schema.type.join("|") : typeof schema.type === "string" ? schema.type : undefined;
+	const required = Array.isArray(schema.required) && schema.required.length > 0 ? schema.required : undefined;
+	let properties: string[] | undefined;
+	if (schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)) {
+		const keys = Object.keys(schema.properties);
+		if (keys.length > 0) properties = keys.length > 12 ? [...keys.slice(0, 12), "…"] : keys;
+	}
+	const parts: string[] = [];
+	if (title) parts.push(`title: ${title}`);
+	if (type) parts.push(`type: ${type}`);
+	if (required) parts.push(`required: ${required.join(", ")}`);
+	if (properties?.length) parts.push(`properties: ${properties.join(", ")}`);
+	if (parts.length === 0) {
+		const json = JSON.stringify(schema);
+		return json.length > 400 ? `${json.slice(0, 400)}…` : json;
+	}
+	return parts.join("; ");
+}
+
+export interface StructuredOutputRepairPromptInput {
+	agentName: string;
+	/** The structured output validation error (e.g. `path: msg; path: msg`). */
+	validationError: string;
+	schema: JsonSchemaObject;
+	/** 1-based repair attempt index. */
+	attempt: number;
+	/** Total allowed repair attempts. */
+	maxRetries: number;
+	/**
+	 * Original task text. Included only when the child cannot recover the
+	 * context from a reused session; when a session is reused this must stay
+	 * omitted so the model only repairs the output instead of re-running.
+	 */
+	originalTask?: string;
+}
+
+/**
+ * Build the natural-language repair prompt for parent-level output repair.
+ *
+ * Instructs the child to fix only the structured output — not to re-run the
+ * original task or make further changes. The structured error list gives the
+ * model precise `path: message` localization; the schema summary keeps tokens
+ * bounded.
+ */
+export function buildStructuredOutputRepairPrompt(input: StructuredOutputRepairPromptInput): string {
+	const lines = [
+		"Your previous response did not pass structured output validation.",
+		"",
+		"Validation errors:",
+		...(input.validationError
+			.split("; ")
+			.map((entry) => entry.trim())
+			.filter(Boolean)
+			.map((entry) => `- ${entry}`)),
+		"",
+		"Expected output shape:",
+		summarizeOutputSchema(input.schema),
+		"",
+		`Do NOT re-run the original task and do not make any further file or tool changes. Call the structured_output tool again with a corrected value that satisfies the schema above (attempt ${input.attempt} of ${input.maxRetries}).`,
+	];
+	if (input.originalTask) {
+		lines.unshift(
+			`The task context (for reference; do not re-run it):`,
+			input.originalTask,
+			"",
+		);
+	}
+	return lines.join("\n");
+}

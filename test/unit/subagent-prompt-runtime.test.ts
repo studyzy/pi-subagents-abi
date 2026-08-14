@@ -24,6 +24,7 @@ import { CHILD_TOOL_DIAGNOSTIC_PATH_ENV, formatChildToolDiagnostic, MCP_DIRECT_C
 import { CHILD_WATCHDOG_CONFIG_ENV } from "../../src/watchdog/child-status.ts";
 import { SUBAGENT_WATCHDOG_WARNING_TYPE } from "../../src/watchdog/types.ts";
 import registerSubagentPromptRuntime, {
+	buildTypedInputInstructions,
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
 	SUBAGENT_INTERCOM_SESSION_NAME_ENV,
@@ -1244,5 +1245,35 @@ describe("subagent prompt runtime", () => {
 		];
 
 		assert.equal(contextHandler?.({ messages }, {}), undefined);
+	});
+});
+
+describe("buildTypedInputInstructions", () => {
+	it("builds a typed-input section with schema and input", () => {
+		const text = buildTypedInputInstructions("arch", { target: "." }, { type: "object", properties: { target: { type: "string" } } });
+		assert.match(text, /typed subagent/);
+		assert.match(text, /Agent: arch/);
+		assert.match(text, /Input contract:/);
+		assert.match(text, /"type": "object"/);
+		assert.match(text, /Input:/);
+		assert.match(text, /"target": "\."/);
+	});
+
+	it("omits the contract section when no schema is provided", () => {
+		const text = buildTypedInputInstructions("arch", { target: "." });
+		assert.match(text, /typed subagent/);
+		assert.doesNotMatch(text, /Input contract:/);
+		assert.match(text, /Input:/);
+	});
+
+	it("includes the additional instruction when provided", () => {
+		const text = buildTypedInputInstructions("arch", { target: "." }, undefined, "Focus on security.");
+		assert.match(text, /Additional instruction:/);
+		assert.match(text, /Focus on security\./);
+	});
+
+	it("omits the additional instruction when absent", () => {
+		const text = buildTypedInputInstructions("arch", { target: "." });
+		assert.doesNotMatch(text, /Additional instruction:/);
 	});
 });

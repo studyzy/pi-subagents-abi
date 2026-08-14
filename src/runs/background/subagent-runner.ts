@@ -1437,6 +1437,7 @@ async function runSingleStep(
 			steerCapabilityPath: ctx.steerCapabilityPath,
 			steerAckDir: ctx.steerAckDir,
 			structuredOutput: effectiveStructuredOutput,
+			typedInput: step.typedInput,
 			toolBudget: step.toolBudget,
 			permissionRules: step.permissionRules,
 			permissionAuditPath: step.permissionRules && ctx.artifactsDir

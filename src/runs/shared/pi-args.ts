@@ -18,6 +18,7 @@ import {
 	STRUCTURED_OUTPUT_CAPTURE_ENV,
 	STRUCTURED_OUTPUT_SCHEMA_ENV,
 } from "./structured-output.ts";
+import { TYPED_INPUT_ENV } from "./typed-input.ts";
 import {
 	TEMP_ROOT_DIR,
 	type JsonSchemaObject,
@@ -172,6 +173,10 @@ export interface BuildPiArgsInput {
 		schema: JsonSchemaObject;
 		schemaPath: string;
 		outputPath: string;
+	};
+	typedInput?: {
+		input: unknown;
+		inputPath: string;
 	};
 	toolBudget?: ResolvedToolBudget;
 	allowZeroToolBudget?: boolean;
@@ -802,6 +807,9 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (input.structuredOutput) {
 		env[STRUCTURED_OUTPUT_CAPTURE_ENV] = input.structuredOutput.outputPath;
 		env[STRUCTURED_OUTPUT_SCHEMA_ENV] = input.structuredOutput.schemaPath;
+	}
+	if (input.typedInput) {
+		env[TYPED_INPUT_ENV] = input.typedInput.inputPath;
 	}
 	if (input.steerInboxDir) {
 		env[SUBAGENT_STEER_INBOX_ENV] = input.steerInboxDir;

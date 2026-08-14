@@ -22,6 +22,7 @@ import {
 	resolveAgentName,
 } from "./agents.ts";
 import { serializeAgent } from "./agent-serializer.ts";
+import { formatAbiSummary } from "./abi.ts";
 import { mergeAgentsForScope } from "./agent-selection.ts";
 import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills, resolveSkills } from "./skills.ts";
@@ -771,12 +772,12 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Ag
 	const lines = [
 		"Executable agents:",
 		...(agents.length
-			? agents.map((a) => `- ${a.name} (${a.source}${a.defaultContext ? `, context: ${a.defaultContext}` : ""}${a.aliases?.length ? `, aliases: ${a.aliases.join(", ")}` : ""}): ${a.description}`)
+			? agents.map((a) => `- ${a.name} (${a.source}${a.defaultContext ? `, context: ${a.defaultContext}` : ""}${a.aliases?.length ? `, aliases: ${a.aliases.join(", ")}` : ""}): ${a.description}${formatAbiSummary(a.abi) ? ` ${formatAbiSummary(a.abi)}` : ""}`)
 			: ["- (none)"]),
 		...(restrictedAgents.length ? [
 			"",
 			`Restricted agents (not executable in this session${restrictedSources?.length ? `; capability ceiling: ${restrictedSources.join(", ")}` : ""}):`,
-			...restrictedAgents.map((a) => `- ${a.name} (${a.source}${a.aliases?.length ? `, aliases: ${a.aliases.join(", ")}` : ""}): ${a.description}`),
+			...restrictedAgents.map((a) => `- ${a.name} (${a.source}${a.aliases?.length ? `, aliases: ${a.aliases.join(", ")}` : ""}): ${a.description}${formatAbiSummary(a.abi) ? ` ${formatAbiSummary(a.abi)}` : ""}`),
 		] : []),
 		"",
 		"Chains:",

@@ -57,6 +57,46 @@ describe("agent management config parsing", () => {
 		assert.doesNotMatch(readText(result), /- scout \(builtin/);
 	});
 
+	it("appends the ABI summary to list lines and leaves legacy agents unchanged", () => {
+		const agentsDir = path.join(tempDir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+		fs.writeFileSync(path.join(agentsDir, "architecture-reviewer.md"), `---
+name: architecture-reviewer
+description: Analyze repository architecture
+abi:
+  version: "1"
+  input:
+    title: ArchitectureReviewRequest
+    type: object
+    required:
+      - target
+    properties:
+      target:
+        type: string
+  output:
+    title: ArchitectureReviewResult
+    type: object
+    properties:
+      summary:
+        type: string
+---
+
+Analyze the target.
+`);
+		fs.writeFileSync(path.join(agentsDir, "plain.md"), "---\nname: plain\ndescription: No ABI\n---\n\nJust work.\n");
+
+		const result = handleList(
+			{ agentScope: "project" },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+		);
+
+		const text = readText(result);
+		assert.equal(result.isError, false);
+		assert.match(text, /- architecture-reviewer \(project\): Analyze repository architecture \[ArchitectureReviewRequest -> ArchitectureReviewResult\]/);
+		assert.match(text, /- plain \(project\): No ABI$/m);
+		assert.doesNotMatch(text, /- plain .*\[object -> object\]/);
+	});
+
 	it("gets only the effective agent detail and respects explicit scope", () => {
 		const projectAgentsDir = path.join(tempDir, ".pi", "agents");
 		const userAgentsDir = path.join(tempDir, "agent-home", "agents");

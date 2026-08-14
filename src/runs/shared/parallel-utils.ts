@@ -50,6 +50,10 @@ export interface RunnerSubagentStep {
 		outputPath: string;
 	};
 	structuredOutputSchema?: import("../../shared/types.ts").JsonSchemaObject;
+	typedInput?: {
+		input: unknown;
+		inputPath: string;
+	};
 	agentContract?: import("../../shared/types.ts").AgentContract;
 	definitionDigest?: string;
 	launchBindingTask?: string;

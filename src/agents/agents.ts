@@ -18,6 +18,7 @@ import { buildRuntimeName, parsePackageName } from "./identity.ts";
 import { parseModelScopeConfig, type ModelScopeConfig } from "../runs/shared/model-scope.ts";
 export { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.ts";
 import { parseMemoryFrontmatter } from "./agent-memory.ts";
+import { parseAgentAbiFrontmatter, type AgentABI } from "./abi.ts";
 import { resolveTurnBudgetConfig } from "../runs/shared/turn-budget.ts";
 import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
 import { validatePermissionRules, type PermissionRules } from "../runs/shared/permissions.ts";
@@ -151,6 +152,7 @@ export interface AgentConfig {
 	toolBudget?: ToolBudgetConfig;
 	permissions?: PermissionRules;
 	memory?: AgentMemoryConfig;
+	abi?: AgentABI;
 	disabled?: boolean;
 	extraFields?: Record<string, string>;
 	override?: BuiltinAgentOverrideInfo;
@@ -1639,6 +1641,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			? parsedMaxSubagentDepth
 			: undefined;
 		const memory = parseMemoryFrontmatter(frontmatter.memory);
+		const abi = parseAgentAbiFrontmatter(frontmatter.abi, localName);
 		const agent: AgentConfig = {
 			name: runtimeName,
 			...(runner !== undefined ? { runner } : {}),
@@ -1677,6 +1680,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			...(toolBudget !== undefined ? { toolBudget } : {}),
 			...(permissions !== undefined ? { permissions } : {}),
 			...(memory !== undefined ? { memory } : {}),
+			...(abi !== undefined ? { abi } : {}),
 			...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
 		};
 		agentFrontmatterFields.set(agent, new Set(Object.keys(frontmatter)));

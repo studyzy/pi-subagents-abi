@@ -257,6 +257,7 @@ const ControlOverrides = Type.Object({
 const SubagentParamProperties = {
 	agent: Type.Optional(Type.String({ description: "Agent for one-child execution, or target for agent management actions." })),
 	task: Type.Optional(Type.String({ description: "Optional one-child task. Requires agent; cannot combine with action or workflowScript." })),
+	input: Type.Optional(Type.Unsafe({ type: "object", additionalProperties: true, description: "Optional typed input, validated against the agent's abi.input schema." })),
 	resume: Type.Optional(Type.String({ description: "Retained child run id for a workflowScript runs.run/runs.all item. Mutually exclusive with agent; task supplies the follow-up." })),
 	// Management action (when present, tool operates in management mode)
 	action: Type.Optional(Type.String({ minLength: 1,

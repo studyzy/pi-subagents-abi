@@ -8,6 +8,7 @@ import { consumeSteerRequestsFromDir, MAX_STEER_QUEUE_SIZE, steerAckPathFromDir,
 import { SUBAGENT_CHILD_AGENT_ENV, SUBAGENT_CHILD_INDEX_ENV, SUBAGENT_FANOUT_CHILD_ENV, SUBAGENT_STEER_ACK_DIR_ENV, SUBAGENT_STEER_CAPABILITY_ENV, SUBAGENT_STEER_INBOX_ENV } from "./pi-args.ts";
 import { RUNTIME_EXTENSION_ACK_EVENT, RUNTIME_EXTENSION_ACK_PATH_ENV, isRuntimeAcknowledgedExtensionId, writeRuntimeAcknowledgedExtensions } from "./runtime-acknowledged-extensions.ts";
 import { createStructuredOutputToolParameters, STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
+import { readTypedInputPayload, TYPED_INPUT_ENV } from "./typed-input.ts";
 import {
 	CHILD_TOOL_DIAGNOSTIC_PATH_ENV,
 	MCP_DIRECT_CHILD_TOOLS_ENV,
@@ -38,6 +39,27 @@ const STRUCTURED_OUTPUT_INSTRUCTIONS = [
 	"Your final action must be to call the `structured_output` tool with JSON matching the provided schema.",
 	"Do not rely on prose-only completion; if you do not call `structured_output`, the parent will fail this step.",
 ].join("\n");
+
+/**
+ * Build the structured typed-input section injected into the child prompt when
+ * the parent supplied a typed input via {@link TYPED_INPUT_ENV}.
+ */
+export function buildTypedInputInstructions(agentName: string, input: unknown, schema?: JsonSchemaObject, additionalInstruction?: string): string {
+	const sections = [
+		"You are being invoked as a typed subagent.",
+		"",
+		`Agent: ${agentName}`,
+	];
+	if (schema !== undefined) {
+		sections.push("", "Input contract:", "```json", JSON.stringify(schema, null, 2), "```");
+	}
+	sections.push("", "Input:", "```json", JSON.stringify(input, null, 2), "```");
+	if (additionalInstruction) {
+		sections.push("", "Additional instruction:", additionalInstruction);
+	}
+	sections.push("", "You MUST treat the input object as the primary structured task input.");
+	return sections.join("\n");
+}
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent, not the parent orchestrator.",
@@ -666,6 +688,11 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 				inheritSkills: inheritSkills ?? true,
 				fanoutChild: fanoutChild === true,
 			});
+		}
+		const typedInput = readTypedInputPayload(process.env[TYPED_INPUT_ENV]?.trim());
+		if (typedInput) {
+			const agentName = process.env[SUBAGENT_CHILD_AGENT_ENV]?.trim() ?? "subagent";
+			rewritten = `${buildTypedInputInstructions(agentName, typedInput.input, typedInput.schema)}\n\n${rewritten}`;
 		}
 		if (rewritten === event.systemPrompt) return;
 		return { systemPrompt: rewritten };

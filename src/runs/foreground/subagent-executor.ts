@@ -4,6 +4,7 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveAgentName, type AgentConfig, type AgentScope } from "../../agents/agents.ts";
+import { resolveEffectiveOutputSchema, validateTypedInputSync } from "../../agents/abi.ts";
 import { getArtifactsDir, getChainRunsDir, getProjectArtifactPackagingWarning, getProjectSubagentsDir } from "../../shared/artifacts.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
@@ -73,6 +74,7 @@ import { intersectSubagentCapabilityCeilings, resolveCurrentSubagentCapabilityCe
 import { isAgentContractV1 } from "../shared/agent-contract.ts";
 import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { cleanupStructuredOutputRuntime, createStructuredOutputRuntime } from "../shared/structured-output.ts";
+import { cleanupTypedInputRuntime, createTypedInputRuntime } from "../shared/typed-input.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd, sumResultsCost, sumResultsUsage } from "../../shared/utils.ts";
 import { createTaskMutationArbiter } from "../shared/llm-intent-arbiter.ts";
 import { DEFAULT_GLOBAL_CONCURRENCY_LIMIT, Semaphore } from "../shared/parallel-utils.ts";
@@ -279,6 +281,8 @@ export interface SubagentParamsLike {
 	type?: string;
 	agent?: string;
 	task?: string;
+	/** Typed structured input matching the agent's declared abi.input schema. */
+	input?: unknown;
 	/** Retained async child run id. Valid only on workflow runs.run items. */
 	resume?: string;
 	message?: string;
@@ -2871,6 +2875,16 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 				details: { mode: "single" as const, results: [] },
 			};
 		}
+		if (a.abi?.input !== undefined && params.input !== undefined) {
+			const inputValidation = validateTypedInputSync(a.abi.input, params.input);
+			if (inputValidation.status === "invalid") {
+				return {
+					content: [{ type: "text", text: `Invalid input for agent "${params.agent}":\n${inputValidation.message}` }],
+					isError: true,
+					details: { mode: "single" as const, results: [] },
+				};
+			}
+		}
 		const rawOutput = params.output !== undefined ? params.output : a.output;
 		const effectiveOutput = normalizeSingleOutputOverride(rawOutput, a.output);
 		const effectiveOutputMode = params.outputMode ?? "inline";
@@ -2918,7 +2932,10 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(agent, index) : undefined,
 			nestedRoute,
 			agentContract: params.agentContract,
-			structuredOutputSchema: params.outputSchema,
+			structuredOutputSchema: resolveEffectiveOutputSchema(params.outputSchema, a.abi),
+			typedInput: params.input !== undefined && a.abi?.input !== undefined
+				? { input: params.input, inputSchema: a.abi.input }
+				: undefined,
 			acceptance: params.acceptance,
 			timeoutMs: data.timeoutMs,
 			turnBudget: data.turnBudget,
@@ -4148,6 +4165,23 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	const effectiveToolBudget = resolveEffectiveToolBudget(omitUndefinedProperties({ runBudget: data.toolBudget, agentBudget: agentConfig.toolBudget, configBudget: data.configToolBudget }));
 	if (effectiveToolBudget.error) return toExecutionErrorResult(params, new Error(effectiveToolBudget.error), data.contextPolicy.contextSummary);
 
+	// per-call outputSchema wins; otherwise fall back to the agent's declared abi.output.
+	const effectiveOutputSchema = resolveEffectiveOutputSchema(params.outputSchema, agentConfig.abi);
+
+	// Validate typed input against the agent's declared abi.input, if both exist.
+	// A malformed input is a hard error (no child process starts); a missing
+	// input with an abi.input declaration degrades to legacy behavior.
+	if (agentConfig.abi?.input !== undefined && params.input !== undefined) {
+		const inputValidation = validateTypedInputSync(agentConfig.abi.input, params.input);
+		if (inputValidation.status === "invalid") {
+			return {
+				content: [{ type: "text", text: `Invalid input for agent "${params.agent}":\n${inputValidation.message}` }],
+				isError: true,
+				details: { mode: "single", results: [] },
+			};
+		}
+	}
+
 	const parentModel = data.parentModel;
 	const currentProvider = parentModel?.provider;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
@@ -4258,12 +4292,12 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 					controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 					childIntercomTarget: data.intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(id, agent, index) : undefined,
 					nestedRoute: data.nestedRoute,
-					agentContract: params.agentContract,
-					structuredOutputSchema: params.outputSchema,
-					acceptance: params.acceptance,
-					timeoutMs: data.timeoutMs,
-					turnBudget: data.turnBudget,
-					toolBudget: effectiveToolBudget.toolBudget,
+				agentContract: params.agentContract,
+				structuredOutputSchema: effectiveOutputSchema,
+				acceptance: params.acceptance,
+				timeoutMs: data.timeoutMs,
+				turnBudget: data.turnBudget,
+				toolBudget: effectiveToolBudget.toolBudget,
 					usageBudget: data.usageBudget,
 					allowZeroToolBudget: data.allowZeroToolBudget && effectiveToolBudget.toolBudget === data.toolBudget,
 					runFanoutBudget: data.runFanoutBudget,
@@ -4284,8 +4318,11 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	if (validationError) {
 		return { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };
 	}
-	const structuredRuntime = params.outputSchema
-		? createStructuredOutputRuntime(params.outputSchema, artifactConfig.enabled ? path.join(artifactsDir, "structured-output", runId) : undefined)
+	const structuredRuntime = effectiveOutputSchema
+		? createStructuredOutputRuntime(effectiveOutputSchema, artifactConfig.enabled ? path.join(artifactsDir, "structured-output", runId) : undefined)
+		: undefined;
+	const typedInputRuntime = params.input !== undefined && agentConfig.abi?.input !== undefined
+		? createTypedInputRuntime(params.input, agentConfig.abi.input, artifactConfig.enabled ? path.join(artifactsDir, "typed-input", runId) : undefined)
 		: undefined;
 	// Reads: caller override > agent defaultReads > none. `~`/`~/` expand to home;
 	// absolute paths pass through; relative paths resolve against the child cwd.
@@ -4375,6 +4412,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			modelScope: data.modelScope,
 			skills: effectiveSkills,
 			structuredOutput: structuredRuntime,
+			typedInput: typedInputRuntime,
 			agentContract: params.agentContract,
 			acceptance: params.acceptance,
 			acceptanceContext: { mode: "single" },
@@ -4394,9 +4432,13 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 						if (!artifactConfig.enabled) cleanupStructuredOutputRuntime(structuredRuntime);
 					} finally {
 						try {
-							if (foregroundControl) finishForegroundChild(foregroundControl, 0);
+							if (!artifactConfig.enabled) cleanupTypedInputRuntime(typedInputRuntime);
 						} finally {
-							removeForegroundControlIfIdle(deps.state, runId);
+							try {
+								if (foregroundControl) finishForegroundChild(foregroundControl, 0);
+							} finally {
+								removeForegroundControlIfIdle(deps.state, runId);
+							}
 						}
 					}
 				}
@@ -4418,6 +4460,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		// authoritative completion remains live.
 		if (!r?.detached) {
 			if (!artifactConfig.enabled) cleanupStructuredOutputRuntime(structuredRuntime);
+			if (!artifactConfig.enabled) cleanupTypedInputRuntime(typedInputRuntime);
 			if (foregroundControl) finishForegroundChild(foregroundControl, 0);
 		}
 	}

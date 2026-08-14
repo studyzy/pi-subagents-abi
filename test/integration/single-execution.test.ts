@@ -41,6 +41,7 @@ import { ACTIVE_RUN_INDEX_DIR } from "../../src/runs/background/active-run-index
 import { CHILD_WATCHDOG_STATUS_EVENT } from "../../src/watchdog/child-status.ts";
 import { WAIT_TOOL_ENABLED_ENV } from "../../src/runs/background/wait-config.ts";
 import { TOOL_BUDGET_ENV, TOOL_BUDGET_ZERO_AUTH_ENV } from "../../src/runs/shared/tool-budget.ts";
+import { TYPED_INPUT_ENV } from "../../src/runs/shared/typed-input.ts";
 import { createRunFanoutBudget, encodeRunFanoutBudgetDescriptor, RUN_FANOUT_BUDGET_ENV } from "../../src/runs/shared/run-fanout-budget.ts";
 import { MainWatchdogRuntime } from "../../src/watchdog/runtime.ts";
 import { MAX_CHILD_PENDING_LINE_BYTES, MAX_CHILD_STDERR_BYTES } from "../../src/runs/shared/child-protocol.ts";
@@ -2817,6 +2818,71 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		if (child?.artifactPaths?.outputPath) assert.match(fs.readFileSync(child.artifactPaths.outputPath, "utf-8"), /"note": "captured"/);
 	});
 
+	it("falls back to the agent's declared abi.output when no per-call outputSchema is provided", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({
+			stdoutRaw: [
+				{ type: "tool_execution_start", toolName: "structured_output", args: { value: { ok: true } } },
+				{ type: "tool_result_end", message: { role: "toolResult", toolName: "structured_output", content: [{ type: "text", text: "Structured output captured." }] } },
+				{ type: "tool_execution_end", toolName: "structured_output" },
+			].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+			structuredOutputCapture: { ok: true },
+		});
+		const executor = makeExecutor([makeAgent("echo", {
+			abi: { output: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } } },
+		})]);
+
+		const result = await executor.execute(
+			"single-abi-output-fallback",
+			{ agent: "echo", task: "Return structured data", acceptance: false },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		const child = result.details?.results?.[0];
+		assert.deepEqual(child?.structuredOutput, { ok: true });
+	});
+
+	it("rejects invalid input against abi.input without starting a child process", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const executor = makeExecutor([makeAgent("echo", {
+			abi: { input: { type: "object", required: ["target"], properties: { target: { type: "string" } } } },
+		})]);
+
+		const result = await executor.execute(
+			"single-abi-input-invalid",
+			{ agent: "echo", task: "Process input", input: { wrong: true } },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Invalid input for agent "echo"/);
+		assert.equal(mockPi.callCount(), 0, "invalid input must not spawn a child process");
+	});
+
+	it("injects the typed-input env for valid input against abi.input", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "processed", echoEnv: [TYPED_INPUT_ENV] });
+		const executor = makeExecutor([makeAgent("echo", {
+			abi: { input: { type: "object", required: ["target"], properties: { target: { type: "string" } } } },
+		})]);
+
+		const result = await executor.execute(
+			"single-abi-input-valid",
+			{ agent: "echo", task: "Process input", input: { target: "." } },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(mockPi.callCount(), 1);
+		// The child echoes the env value (the temp input.json path); assert it is non-empty.
+		const child = result.details?.results?.[0];
+		assert.match(child?.finalOutput ?? "", /pi-subagent-typed-input-/);
+	});
+
 	it("accepts recovered tool errors before valid structured output but rejects later errors", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		const recoveredError = { type: "tool_result_end", message: { role: "toolResult", toolName: "read", isError: true, content: [{ type: "text", text: "EISDIR" }] } };
 		const structuredEvents = [
@@ -2865,6 +2931,82 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.match(child?.error ?? "", /Missing structured_output call/);
 		assert.ok(child?.structuredOutputPath);
 		assert.equal(fs.existsSync(path.dirname(child.structuredOutputPath)), false);
+	});
+
+	it("repairs a failed structured output with a parent-level retry and returns the corrected value", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const structuredEvents = [
+			{ type: "tool_execution_start", toolName: "structured_output", args: { value: { ok: true } } },
+			{ type: "tool_result_end", message: { role: "toolResult", toolName: "structured_output", content: [{ type: "text", text: "Structured output captured." }] } },
+			{ type: "tool_execution_end", toolName: "structured_output" },
+		].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+		mockPi.onCall({
+			stdoutRaw: structuredEvents,
+			structuredOutputCapture: { wrong: true },
+		});
+		mockPi.onCall({
+			stdoutRaw: structuredEvents,
+			structuredOutputCapture: { ok: true, note: "repaired" },
+			matchArgIncludes: ["Your previous response did not pass structured output validation"],
+		});
+		const executor = makeExecutor([makeAgent("echo", {
+			abi: {
+				output: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" }, note: { type: "string" } } },
+			},
+		})]);
+
+		const result = await executor.execute(
+			"single-schema-repair",
+			{ agent: "echo", task: "Return structured data", acceptance: false },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		const child = result.details?.results?.[0];
+		assert.deepEqual(child?.structuredOutput, { ok: true, note: "repaired" });
+		assert.equal(child?.structuredOutputFailed, undefined);
+		assert.equal(mockPi.callCount(), 2, "a failed structured output must trigger exactly one repair attempt");
+		const allCalls = readAllCallArgs();
+		assert.match(allCalls[0]?.join("\n") ?? "", /Return structured data/);
+		assert.match(allCalls[1]?.join("\n") ?? "", /Your previous response did not pass structured output validation/);
+	});
+
+	it("exhausts output repair attempts and returns a typed failure without further spawns", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const structuredEvents = [
+			{ type: "tool_execution_start", toolName: "structured_output", args: { value: { ok: true } } },
+			{ type: "tool_result_end", message: { role: "toolResult", toolName: "structured_output", content: [{ type: "text", text: "Structured output captured." }] } },
+			{ type: "tool_execution_end", toolName: "structured_output" },
+		].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+		mockPi.onCall({
+			stdoutRaw: structuredEvents,
+			structuredOutputCapture: { wrong: true },
+		});
+		mockPi.onCall({
+			stdoutRaw: structuredEvents,
+			structuredOutputCapture: { wrong: true },
+			matchArgIncludes: ["Your previous response did not pass structured output validation"],
+		});
+		const executor = makeExecutor([makeAgent("echo", {
+			abi: {
+				output: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+				maxRetries: 1,
+			},
+		})]);
+
+		const result = await executor.execute(
+			"single-schema-repair-exhausted",
+			{ agent: "echo", task: "Return structured data", acceptance: false },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		const child = result.details?.results?.[0];
+		assert.equal(child?.structuredOutputFailed, true);
+		assert.equal(child?.exitCode, 1);
+		assert.match(child?.error ?? "", /Structured output validation failed/);
+		assert.equal(mockPi.callCount(), 2, "repair attempts must be capped at abi.maxRetries");
 	});
 
 	it("does not create a temporary structured output directory before file-only validation", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {

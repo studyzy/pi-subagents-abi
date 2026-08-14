@@ -31,6 +31,7 @@ import { resolveExpectedWorktreeAgentCwd } from "../shared/worktree.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
+import { createTypedInputRuntime } from "../shared/typed-input.ts";
 import { resolveEffectiveAcceptance, validateAcceptanceInput, validateExecutionAcceptance } from "../shared/acceptance.ts";
 import { createRunFanoutBudget, writeRunFanoutBudgetDescriptor } from "../shared/run-fanout-budget.ts";
 import {
@@ -217,6 +218,10 @@ interface AsyncSingleParams {
 	outputBaseDir?: string;
 	agentContract?: AgentContract;
 	structuredOutputSchema?: JsonSchemaObject;
+	typedInput?: {
+		input: unknown;
+		inputSchema?: JsonSchemaObject;
+	};
 	modelOverride?: string;
 	thinkingOverride?: AgentConfig["thinking"];
 	availableModels?: AvailableModelInfo[];
@@ -1330,6 +1335,7 @@ export function executeAsyncSingle(
 		if (params.modelOverride !== undefined) unsupported.push("model override");
 		if (params.thinkingOverride !== undefined) unsupported.push("thinking override");
 		if (params.structuredOutputSchema !== undefined) unsupported.push("structured output");
+		if (params.typedInput !== undefined) unsupported.push("typed input");
 		if (params.acceptance !== undefined || params.agentContract !== undefined) unsupported.push("acceptance/agent contract");
 		if (params.toolBudget !== undefined || agentConfig.toolBudget !== undefined || params.configToolBudget !== undefined) unsupported.push("tool budget");
 		if (params.context === "fork") unsupported.push("fork context");
@@ -1428,6 +1434,9 @@ export function executeAsyncSingle(
 	const resolvedSessionDir = params.sessionDir ?? (sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined);
 	const structuredOutput = params.structuredOutputSchema
 		? createStructuredOutputRuntime(params.structuredOutputSchema, path.join(asyncDir, "structured-output"))
+		: undefined;
+	const typedInput = params.typedInput
+		? createTypedInputRuntime(params.typedInput.input, params.typedInput.inputSchema, path.join(asyncDir, "typed-input"))
 		: undefined;
 	const modelCandidates = buildModelCandidates(primaryModel, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider, { scope: ctx.modelScope })
 		.flatMap((candidate) => {
@@ -1567,6 +1576,7 @@ export function executeAsyncSingle(
 						effectiveAcceptance: resolvedAcceptance,
 						...(structuredOutput ? { structuredOutput } : {}),
 						...(params.structuredOutputSchema ? { structuredOutputSchema: params.structuredOutputSchema } : {}),
+						...(typedInput ? { typedInput } : {}),
 						...(resolvedToolBudget.budget ? { toolBudget: resolvedToolBudget.budget } : {}),
 					},
 				],

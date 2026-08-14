@@ -38,6 +38,7 @@ export const KNOWN_FIELDS = new Set([
 	"permissions",
 	"memory",
 	"runner",
+	"abi",
 ]);
 
 function joinComma(values: string[] | undefined): string | undefined {
@@ -141,6 +142,13 @@ export function serializeAgent(config: AgentConfig, options: SerializeAgentOptio
 		lines.push("memory:");
 		lines.push(`  scope: ${config.memory.scope}`);
 		lines.push(`  path: ${config.memory.path}`);
+	}
+
+	if (config.abi || preserve("abi")) {
+		lines.push("abi:");
+		if (config.abi) {
+			for (const line of stringifyYaml(config.abi).trimEnd().split("\n")) lines.push(`  ${line}`);
+		}
 	}
 
 	if (config.extraFields) {

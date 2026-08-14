@@ -62,8 +62,38 @@ The extension ships with agents you can use immediately:
 | `reviewer` | Code review and small fixes against the task/plan, tests, edge cases, and simplicity. |
 | `oracle` | A second opinion before acting. Challenges assumptions without editing. |
 | `delegate` | A lightweight general delegate that behaves close to the parent session. |
+| `architecture-reviewer` | A typed ABI example: takes a `target`, returns a structured architecture review report. |
 
 Rule of thumb: `scout` before you understand the code, `researcher` before you trust external facts, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
+
+## Typed agents (ABI)
+
+Agents can declare a typed contract in frontmatter with an `abi:` block: an input schema, an output schema, and an optional `maxRetries` repair budget. The shipped `architecture-reviewer` agent is a working example:
+
+```yaml
+abi:
+  version: "1"
+  input:
+    title: ArchitectureReviewRequest
+    type: object
+    required: [target]
+    properties:
+      target: { type: string }
+  output:
+    title: ArchitectureReviewResult
+    type: object
+    required: [summary, strengths, risks, recommendedActions]
+```
+
+When you call a typed agent, Pi validates your task input against the input schema, injects it into the child session, requires the child to answer through `structured_output`, and (on failure) repairs the output with up to `maxRetries` parent-level retries before returning a typed failure:
+
+```text
+Use architecture-reviewer to analyze the auth module with focus on dependencies.
+```
+
+Running `subagent({ action: "list" })` shows each agent's contract, e.g. `- architecture-reviewer (builtin): ... [ArchitectureReviewRequest -> ArchitectureReviewResult]`.
+
+See [docs/pi-agent-abi-development-plan.md](docs/pi-agent-abi-development-plan.md) for the full ABI design.
 
 ## Common workflows
 

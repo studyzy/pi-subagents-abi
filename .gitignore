@@ -2,6 +2,7 @@
 .pi/subagents/
 .pi-subagents/
 .DS_Store
+.idea/
 AGENTS.md
 node_modules/
 .fallow/

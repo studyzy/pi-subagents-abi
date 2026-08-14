@@ -42,6 +42,7 @@ Builtins load at the lowest priority, so a user or project agent with the same n
 | `reviewer` | Code review and small fixes. It checks the implementation against the task/plan, tests, edge cases, and simplicity. |
 | `oracle` | A second opinion before acting. It challenges assumptions, catches drift, and recommends the safest next move without editing. |
 | `delegate` | A lightweight general delegate when you want a child agent that behaves close to the parent session. |
+| `architecture-reviewer` | A typed ABI example: takes a `target` and returns a structured architecture review report. |
 
 Rule of thumb: `scout` before you understand the code, `researcher` before you trust external facts, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
 
@@ -187,6 +188,88 @@ Field notes:
 | `interactive` | Parsed for compatibility but not currently enforced. |
 | `maxSubagentDepth` | Tightens nested delegation for this agent's children. |
 | `memory` | Opt-in role-specific persistent memory. See below. |
+| `abi` | Optional typed input/output contract (JSON Schema). See [Typed agents (ABI)](#typed-agents-abi). |
+
+## Typed agents (ABI)
+
+An agent can declare a typed contract with the `abi` frontmatter block: an optional input schema, an optional output schema, and an optional repair budget. The schemas are standard JSON Schema objects and are validated with `typebox/compile` at runtime.
+
+```yaml
+abi:
+  version: "1"
+  input:
+    title: ArchitectureReviewRequest
+    type: object
+    required:
+      - target
+    properties:
+      target: { type: string, description: File path, directory, or module to analyze }
+      focusAreas:
+        type: array
+        items: { type: string, enum: [architecture, dependencies, testability] }
+  output:
+    title: ArchitectureReviewResult
+    type: object
+    required: [summary, strengths, risks, recommendedActions]
+    properties:
+      summary: { type: string }
+      strengths: { type: array, items: { type: string } }
+      risks: { type: array, items: { type: string } }
+      recommendedActions: { type: array, items: { type: string } }
+  maxRetries: 2
+```
+
+The shipped `architecture-reviewer` agent (`agents/architecture-reviewer.md`) is a complete, working example.
+
+### ABI fields
+
+| Field | Notes |
+|-------|-------|
+| `version` | Optional placeholder string. It is parsed and round-tripped but not negotiated (`reviewer@1`/`@2` routing is out of scope). |
+| `input` | Optional JSON Schema the parent validates the call's `input` against before launching the child. |
+| `output` | Optional JSON Schema that switches the child into structured output mode automatically. |
+| `maxRetries` | Parent-level structured-output repair attempts after the child's own self-correction is exhausted. Defaults to `2` when an ABI is declared; `0` disables it. |
+
+### Input behavior
+
+- A call that passes `input` is validated synchronously in the parent against `abi.input`. An invalid value fails fast with a structured error and no child process is spawned.
+- On success the validated input is injected into the child session (environment variables plus a temporary file when the payload is too large for the environment).
+- `abi.input` is optional per-call: passing only `task` to an agent that declares `abi.input` degrades to the legacy free-text behavior and does not error.
+- An agent without an ABI ignores any `input` passed in the call — the legacy `task`-only path is unchanged.
+
+### Output behavior
+
+- Declaring `abi.output` (or passing a per-call `outputSchema`) puts the child in structured output mode: the child must answer through the `structured_output` tool, and the parent validates the value against the schema.
+- When validation fails and `maxRetries > 0`, the child first self-corrects; if it still fails, the parent re-prompts it up to `maxRetries` times with a focused repair instruction (the validation errors and a compact schema summary — the original task is not re-run). Exhausting the budget returns a typed failure with `structuredOutputFailed: true` and a non-zero exit.
+- Agents without an ABI never engage parent-level output repair (`maxRetries` resolves to `0`), so per-call `outputSchema` behavior is unchanged.
+
+### Compatibility matrix
+
+| Agent ABI | Call | Expected |
+|---|---|---|
+| none | `task` | Legacy behavior, unchanged |
+| none | `input` | `input` ignored; `task` used as before |
+| `abi.input` | `input` | Validated, then runs |
+| `abi.input` | invalid `input` | Fail-fast structured error, no spawn |
+| `abi.input` | `task` only | Legacy degradation, no error |
+| `abi.output` | `task` | Automatic structured output |
+| `abi.input` + `abi.output` | `input` | Full typed execution |
+| `abi.input` + `abi.output` | `input` + `task` | Typed input plus supplemental instructions |
+| output validation fails | `maxRetries > 0` | Repair/retry |
+| output validation fails | retries exhausted | Typed failure (`structuredOutputFailed: true`) |
+
+### Discovery
+
+`subagent({ action: "list" })` appends a one-line ABI summary to each agent that declares one, using the `title` of each schema (falling back to `object`):
+
+```text
+- architecture-reviewer (builtin): Analyze repository architecture [ArchitectureReviewRequest -> ArchitectureReviewResult]
+```
+
+### Known limits
+
+- `typebox/compile` does not reject structurally malformed schemas (such as `type: "unknown_type"`), so ABI validation is a sanity check on the schema object shape; deeper schema errors surface when a value is actually validated, matching the existing `outputSchema` behavior.
+- `abi.version` is a placeholder only; there is no version negotiation, schema registry, or cross-language type generation in this first version.
 
 ## Per-agent persistent memory
 

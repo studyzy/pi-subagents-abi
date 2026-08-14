@@ -1827,6 +1827,10 @@ export interface RunSyncOptions {
 		schemaPath: string;
 		outputPath: string;
 	};
+	typedInput?: {
+		input: unknown;
+		inputPath: string;
+	};
 	agentContract?: AgentContract;
 	acceptance?: AcceptanceInput;
 	acceptanceContext?: {

@@ -8,6 +8,7 @@ import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { appendAgentRefinementOverlay } from "../../agents/agent-refinements.ts";
+import { resolveOutputRepairMaxRetries } from "../../agents/abi.ts";
 import { alignForkedSessionCwd } from "../../shared/fork-context.ts";
 import {
 	ensureArtifactsDir,
@@ -65,7 +66,7 @@ import { applyThinkingSuffix, buildPiArgs, cleanupTempDir, projectLaunchResolved
 import { readRuntimeAcknowledgedExtensions } from "../shared/runtime-acknowledged-extensions.ts";
 import { assertAgentAllowedByCapabilityCeiling, decodeSubagentCapabilityCeiling, intersectSubagentCapabilityCeilings, resolveCurrentSubagentCapabilityCeiling, SUBAGENT_CAPABILITY_CEILING_ENV } from "../shared/capability-ceiling.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
-import { MISSING_STRUCTURED_OUTPUT_CALL_ERROR, readStructuredOutput } from "../shared/structured-output.ts";
+import { MISSING_STRUCTURED_OUTPUT_CALL_ERROR, buildStructuredOutputRepairPrompt, readStructuredOutput } from "../shared/structured-output.ts";
 import { formatProcessSignalError, isUnexplainedProcessSignal } from "../shared/process-signal.ts";
 import { readChildToolDiagnosticError } from "../shared/tool-availability.ts";
 import { captureSingleOutputSnapshot, extractChildWrittenOutput, finalizeSingleOutput, formatSavedOutputReference, injectOutputPathSystemPrompt, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
@@ -357,6 +358,7 @@ async function runSingleAttempt(
 		steerCapabilityPath: options.steerCapabilityPath,
 		steerAckDir: options.steerAckDir,
 		structuredOutput: options.structuredOutput,
+		typedInput: options.typedInput,
 		toolBudget: options.toolBudget,
 		allowZeroToolBudget: options.allowZeroToolBudget,
 		permissionRules,
@@ -1842,6 +1844,65 @@ async function runSyncCompletion(
 			if (!isRetryableModelFailure(result.error) || modelIndex === modelsToTry.length - 1) break modelAttemptsLoop;
 			attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[modelIndex + 1]));
 			break;
+		}
+	}
+
+	// Parent-level output repair (validate-repair-retry). Engages only when the
+	// child's final structured output still failed validation after its own
+	// in-process self-correction. Reuses the same session so the child sees its
+	// prior attempt and only fixes the output instead of re-running the task.
+	const outputRepairMaxRetries = resolveOutputRepairMaxRetries(agent.abi);
+	if (
+		outputRepairMaxRetries > 0
+		&& options.structuredOutput
+		&& lastResult?.structuredOutputFailed === true
+		&& !intercomDetached
+		&& !lastResult.timedOut
+		&& !lastResult.turnBudgetExceeded
+		&& !lastResult.interrupted
+		&& !lastResult.stopped
+	) {
+		const repairModel = lastResult.model ?? modelsToTry[0];
+		let repairAttemptIndex = 0;
+		while (lastResult.structuredOutputFailed === true && repairAttemptIndex < outputRepairMaxRetries) {
+			const repairTask = buildStructuredOutputRepairPrompt({
+				agentName: agent.name,
+				validationError: lastResult.error ?? "",
+				schema: options.structuredOutput.schema,
+				attempt: repairAttemptIndex + 1,
+				maxRetries: outputRepairMaxRetries,
+				...(sessionEnabled ? {} : { originalTask: task }),
+			});
+			attemptNotes.push(`[output-repair] attempt ${repairAttemptIndex + 1}/${outputRepairMaxRetries}: re-prompting the subagent to fix the structured output.`);
+			const repairResult = await runSingleAttempt(runtimeCwd, agent, repairTask, repairModel, attemptOptions, {
+				sessionEnabled,
+				systemPrompt,
+				resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
+				skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
+				jsonlPath,
+				artifactPaths: artifactPathsResult,
+				transcriptWriter,
+				attemptNotes,
+				modelCandidates: candidates
+					.map((modelCandidate) => applyThinkingSuffix(modelCandidate, options.thinkingOverride ?? agent.thinking, options.thinkingOverride !== undefined))
+					.filter((modelCandidate): modelCandidate is string => Boolean(modelCandidate)),
+				outputSnapshot: captureSingleOutputSnapshot(options.outputPath),
+				originalTask: task,
+				taskDelivery: taskDeliveryOverride,
+			});
+			lastResult = repairResult;
+			sumUsage(aggregateUsage, repairResult.usage);
+			totalToolCount += repairResult.progressSummary?.toolCount ?? 0;
+			totalDurationMs += repairResult.progressSummary?.durationMs ?? 0;
+			modelAttempts.push({
+				model: repairResult.model ?? repairModel ?? agent.model ?? "default",
+				success: repairResult.exitCode === 0 && !repairResult.error && repairResult.structuredOutputFailed !== true,
+				exitCode: repairResult.exitCode,
+				error: repairResult.error,
+				usage: { ...repairResult.usage },
+			});
+			repairAttemptIndex++;
+			if (repairResult.timedOut || repairResult.turnBudgetExceeded || repairResult.interrupted) break;
 		}
 	}
 
